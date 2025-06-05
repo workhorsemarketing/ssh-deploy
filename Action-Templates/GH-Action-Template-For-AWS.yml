@@ -1,0 +1,71 @@
+name: Deploy to AWS EC2
+
+on:
+  push:
+    branches:
+      - main
+
+env:
+  SECURITY_GROUP_ID: [SECURITY GROUP ID]
+  HOST: [SSH HOST OR IP]
+  USERNAME: [SSH USERNAME]
+  AWS_REGION: [AWS REGION]
+  SSH_TARGET: [DEPLOYMENT FOLDER]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Set up AWS CLI
+      uses: aws-actions/configure-aws-credentials@v2
+      with:
+        aws-access-key-id: ${{ secrets.S15_AWS_SECURITY_GROUP_ACCESS_KEY }}
+        aws-secret-access-key: ${{ secrets.S15_AWS_SECURITY_GROUP_SECRET_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Get current GitHub Actions runner IP
+      id: get-ip
+      run: |
+        curl -s http://checkip.amazonaws.com > runner-ip.txt
+        RUNNER_IP=$(cat runner-ip.txt)
+        echo "Runner IP: $RUNNER_IP"
+        echo "runner_ip=$RUNNER_IP" >> $GITHUB_ENV
+
+    - name: Add IP to security group
+      run: |
+        aws ec2 authorize-security-group-ingress \
+          --group-id ${{ env.SECURITY_GROUP_ID }} \
+          --protocol tcp \
+          --port 22 \
+          --cidr ${{ env.runner_ip }}/32 || true
+
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Deploy to EC2
+      uses: workhorsemarketing/ssh-deploy@main
+      with:
+        SSH_PRIVATE_KEY: ${{ secrets.MLC_STAGING_BACK_MAIN_PRIVATE_KEY }}
+        ARGS: "-rlgoDzvc -i"
+        SOURCE: "./"
+        REMOTE_HOST: ${{ env.HOST }}
+        REMOTE_USER: ${{ env.USERNAME }}
+        TARGET: "${{ env.SSH_TARGET }}"
+        EXCLUDE: "/.github/, /.git/, /README.md, /.gitignore"
+        # SCRIPT_BEFORE: |
+          # whoami
+          # ls -al
+        SCRIPT_AFTER: |
+          whoami
+          composer install && php artisan migrate --force && npm install && npm run build && php artisan optimize:clear && php artisan queue:restart
+          ls -al
+          # echo $RSYNC_STDOUT
+
+    - name: Remove IP from security group
+      run: |
+        aws ec2 revoke-security-group-ingress \
+          --group-id ${{ env.SECURITY_GROUP_ID }} \
+          --protocol tcp \
+          --port 22 \
+          --cidr ${{ env.runner_ip }}/32 || true
