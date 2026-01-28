@@ -30,15 +30,21 @@ jobs:
         curl -s http://checkip.amazonaws.com > runner-ip.txt
         RUNNER_IP=$(cat runner-ip.txt)
         echo "Runner IP: $RUNNER_IP"
-        echo "runner_ip=$RUNNER_IP" >> $GITHUB_ENV
+        echo "runner_ip=$RUNNER_IP" >> $GITHUB_OUTPUT
 
     - name: Add IP to security group
+      env:
+        RUNNER_IP: ${{ steps.get-ip.outputs.runner_ip }}
       run: |
-        aws ec2 authorize-security-group-ingress \
-          --group-id ${{ env.SECURITY_GROUP_ID }} \
-          --protocol tcp \
-          --port 22 \
-          --cidr ${{ env.runner_ip }}/32 || true
+        if [ -n "$RUNNER_IP" ]; then
+          aws ec2 authorize-security-group-ingress \
+            --group-id ${{ env.SECURITY_GROUP_ID }} \
+            --protocol tcp \
+            --port 22 \
+            --cidr "$RUNNER_IP/32" || true
+        else
+          echo "Runner IP unavailable; skipping ingress authorization"
+        fi
 
     - name: Checkout code
       uses: actions/checkout@v3
@@ -58,14 +64,20 @@ jobs:
           # ls -al
         SCRIPT_AFTER: |
           whoami
-          composer install && php artisan migrate --force && npm install && npm run build && php artisan optimize:clear && php artisan queue:restart
           ls -al
           # echo $RSYNC_STDOUT
 
     - name: Remove IP from security group
+      if: ${{ always() }}
+      env:
+        RUNNER_IP: ${{ steps.get-ip.outputs.runner_ip }}
       run: |
-        aws ec2 revoke-security-group-ingress \
-          --group-id ${{ env.SECURITY_GROUP_ID }} \
-          --protocol tcp \
-          --port 22 \
-          --cidr ${{ env.runner_ip }}/32 || true
+        if [ -n "$RUNNER_IP" ]; then
+          aws ec2 revoke-security-group-ingress \
+            --group-id ${{ env.SECURITY_GROUP_ID }} \
+            --protocol tcp \
+            --port 22 \
+            --cidr "$RUNNER_IP/32" || true
+        else
+          echo "Runner IP unavailable; skipping ingress revocation"
+        fi
